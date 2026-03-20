@@ -1,0 +1,848 @@
+diff --git a/24127053_24127203_24127555.patch b/24127053_24127203_24127555.patch
+new file mode 100644
+index 0000000..1e9df3e
+--- /dev/null
++++ b/24127053_24127203_24127555.patch
+@@ -0,0 +1,421 @@
++diff --git a/xv6-labs-2024/Makefile b/xv6-labs-2024/Makefile
++index c97af68..ed1e803 100644
++--- a/xv6-labs-2024/Makefile
+++++ b/xv6-labs-2024/Makefile
++@@ -195,6 +195,9 @@ UPROGS=\
++ 	$U/_wc\
++ 	$U/_zombie\
++ 	$U/_xargs\
+++	$U/_trace\
+++        $U/_procinfo\
+++        $U/_tree\
++ 
++ 
++ ifeq ($(LAB),syscall)
++diff --git a/xv6-labs-2024/kernel/proc.c b/xv6-labs-2024/kernel/proc.c
++index 130d9ce..2e7770e 100644
++--- a/xv6-labs-2024/kernel/proc.c
+++++ b/xv6-labs-2024/kernel/proc.c
++@@ -295,6 +295,7 @@ fork(void)
++     return -1;
++   }
++   np->sz = p->sz;
+++  np->trace_mask = p->trace_mask;
++ 
++   // copy saved user registers.
++   *(np->trapframe) = *(p->trapframe);
++diff --git a/xv6-labs-2024/kernel/proc.h b/xv6-labs-2024/kernel/proc.h
++index d021857..e00e6ca 100644
++--- a/xv6-labs-2024/kernel/proc.h
+++++ b/xv6-labs-2024/kernel/proc.h
++@@ -104,4 +104,5 @@ struct proc {
++   struct file *ofile[NOFILE];  // Open files
++   struct inode *cwd;           // Current directory
++   char name[16];               // Process name (debugging)
+++  int trace_mask;              // Mặt nạ để theo dõi syscall
++ };
++diff --git a/xv6-labs-2024/kernel/procinfo.h b/xv6-labs-2024/kernel/procinfo.h
++new file mode 100644
++index 0000000..e417407
++--- /dev/null
+++++ b/xv6-labs-2024/kernel/procinfo.h
++@@ -0,0 +1,7 @@
+++struct procinfo {
+++  int pid;        // Process ID
+++  int ppid;       // Parent process ID
+++  int state;      // Process state
+++  uint64 sz;      // Size of process memory (bytes)
+++  char name[16];  // Process name
+++};
++diff --git a/xv6-labs-2024/kernel/syscall.c b/xv6-labs-2024/kernel/syscall.c
++index ed65409..4ed175d 100644
++--- a/xv6-labs-2024/kernel/syscall.c
+++++ b/xv6-labs-2024/kernel/syscall.c
++@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
++ extern uint64 sys_link(void);
++ extern uint64 sys_mkdir(void);
++ extern uint64 sys_close(void);
+++extern uint64 sys_trace(void);
+++extern uint64 sys_procinfo(void);
++ 
++ // An array mapping syscall numbers from syscall.h
++ // to the function that handles the system call.
++@@ -126,22 +128,29 @@ static uint64 (*syscalls[])(void) = {
++ [SYS_link]    sys_link,
++ [SYS_mkdir]   sys_mkdir,
++ [SYS_close]   sys_close,
+++[SYS_trace]     sys_trace,
+++[SYS_procinfo]  sys_procinfo,
++ };
++ 
++-void
++-syscall(void)
++-{
+++static char *syscall_names[] = {
+++[SYS_fork] "fork", [SYS_exit] "exit", [SYS_wait] "wait", [SYS_pipe] "pipe",
+++[SYS_read] "read", [SYS_kill] "kill", [SYS_exec] "exec", [SYS_fstat] "fstat",
+++[SYS_chdir] "chdir", [SYS_dup] "dup", [SYS_getpid] "getpid", [SYS_sbrk] "sbrk",
+++[SYS_sleep] "sleep", [SYS_uptime] "uptime", [SYS_open] "open", [SYS_write] "write",
+++[SYS_mknod] "mknod", [SYS_unlink] "unlink", [SYS_link] "link", [SYS_mkdir] "mkdir",
+++[SYS_close] "close", [SYS_trace] "trace", [SYS_procinfo] "procinfo",
+++};
+++
+++void syscall(void) {
++   int num;
++   struct proc *p = myproc();
++-
++   num = p->trapframe->a7;
++   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
++-    // Use num to lookup the system call function for num, call it,
++-    // and store its return value in p->trapframe->a0
++-    p->trapframe->a0 = syscalls[num]();
+++    p->trapframe->a0 = syscalls[num](); // Lưu kết quả trả về [cite: 116]
+++    if((p->trace_mask >> num) & 1) { // Kiểm tra mask [cite: 116]
+++      printf("%d: syscall %s -> %d\n", p->pid, syscall_names[num], (int)p->trapframe->a0); // In theo mẫu [cite: 117]
+++    }
++   } else {
++-    printf("%d %s: unknown sys call %d\n",
++-            p->pid, p->name, num);
++     p->trapframe->a0 = -1;
++   }
++ }
++diff --git a/xv6-labs-2024/kernel/syscall.h b/xv6-labs-2024/kernel/syscall.h
++index bc5f356..7cbf6ef 100644
++--- a/xv6-labs-2024/kernel/syscall.h
+++++ b/xv6-labs-2024/kernel/syscall.h
++@@ -1,22 +1,24 @@
++ // System call numbers
++-#define SYS_fork    1
++-#define SYS_exit    2
++-#define SYS_wait    3
++-#define SYS_pipe    4
++-#define SYS_read    5
++-#define SYS_kill    6
++-#define SYS_exec    7
++-#define SYS_fstat   8
++-#define SYS_chdir   9
++-#define SYS_dup    10
++-#define SYS_getpid 11
++-#define SYS_sbrk   12
++-#define SYS_sleep  13
++-#define SYS_uptime 14
++-#define SYS_open   15
++-#define SYS_write  16
++-#define SYS_mknod  17
++-#define SYS_unlink 18
++-#define SYS_link   19
++-#define SYS_mkdir  20
++-#define SYS_close  21
+++#define SYS_fork      1
+++#define SYS_exit      2
+++#define SYS_wait      3
+++#define SYS_pipe      4
+++#define SYS_read      5
+++#define SYS_kill      6
+++#define SYS_exec      7
+++#define SYS_fstat     8
+++#define SYS_chdir     9
+++#define SYS_dup      10
+++#define SYS_getpid   11
+++#define SYS_sbrk     12
+++#define SYS_sleep    13
+++#define SYS_uptime   14
+++#define SYS_open     15
+++#define SYS_write    16
+++#define SYS_mknod    17
+++#define SYS_unlink   18
+++#define SYS_link     19
+++#define SYS_mkdir    20
+++#define SYS_close    21
+++#define SYS_trace    22
+++#define SYS_procinfo 23
++diff --git a/xv6-labs-2024/kernel/sysproc.c b/xv6-labs-2024/kernel/sysproc.c
++index 3b4d5bd..3610bdd 100644
++--- a/xv6-labs-2024/kernel/sysproc.c
+++++ b/xv6-labs-2024/kernel/sysproc.c
++@@ -5,6 +5,7 @@
++ #include "memlayout.h"
++ #include "spinlock.h"
++ #include "proc.h"
+++#include "procinfo.h"
++ 
++ uint64
++ sys_exit(void)
++@@ -91,3 +92,45 @@ sys_uptime(void)
++   release(&tickslock);
++   return xticks;
++ }
+++
+++uint64
+++sys_trace(void)
+++{
+++  int mask;
+++  
+++  // Chỉ gọi hàm để lấy giá trị, không dùng lệnh if
+++  argint(0, &mask); 
+++  
+++  myproc()->trace_mask = mask;
+++  return 0;
+++}
+++
+++uint64
+++sys_procinfo(void)
+++{
+++  int pid;
+++  uint64 addr;
+++  struct proc *p;
+++  struct procinfo info;
+++  extern struct proc proc[]; 
+++
+++  // Lấy các đối số trực tiếp, bỏ lệnh if đi
+++  argint(0, &pid);
+++  argaddr(1, &addr);
+++
+++  for(p = proc; p < &proc[NPROC]; p++){
+++    acquire(&p->lock);
+++    if(p->pid == pid){
+++      info.pid = p->pid;
+++      info.ppid = p->parent ? p->parent->pid : 0;
+++      info.state = p->state;
+++      info.sz = p->sz;
+++      safestrcpy(info.name, p->name, sizeof(p->name));
+++      release(&p->lock);
+++      if(copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info)) < 0) return -1;
+++      return 0;
+++    }
+++    release(&p->lock);
+++  }
+++  return -1;
+++}
++diff --git a/xv6-labs-2024/user/procinfo.c b/xv6-labs-2024/user/procinfo.c
++new file mode 100644
++index 0000000..0799d91
++--- /dev/null
+++++ b/xv6-labs-2024/user/procinfo.c
++@@ -0,0 +1,28 @@
+++#include "kernel/param.h"
+++#include "kernel/types.h"
+++#include "kernel/stat.h"
+++#include "kernel/procinfo.h"
+++#include "user/user.h"
+++
+++int
+++main(int argc, char *argv[])
+++{
+++  struct procinfo info;
+++  int pid;
+++
+++  if(argc < 2){
+++    pid = getpid();
+++  } else {
+++    pid = atoi(argv[1]);
+++  }
+++
+++  if(procinfo(pid, &info) == 0){
+++    printf("Process: %s\n", info.name);
+++    printf("PID: %d, PPID: %d\n", info.pid, info.ppid);
+++    printf("State: %d\n", info.state);
+++    printf("Memory: %d bytes\n", (int)info.sz);
+++  } else {
+++    printf("procinfo failed for PID %d\n", pid);
+++  }
+++  exit(0);
+++}
++diff --git a/xv6-labs-2024/user/trace.c b/xv6-labs-2024/user/trace.c
++new file mode 100644
++index 0000000..303041a
++--- /dev/null
+++++ b/xv6-labs-2024/user/trace.c
++@@ -0,0 +1,29 @@
+++#include "kernel/param.h"
+++#include "kernel/types.h"
+++#include "kernel/stat.h"
+++#include "user/user.h"
+++
+++int
+++main(int argc, char *argv[])
+++{
+++  int i;
+++  char *nargv[MAXARG];
+++
+++  if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
+++    fprintf(2, "Usage: %s mask command\n", argv[0]);
+++    exit(1);
+++  }
+++
+++  if (trace(atoi(argv[1])) < 0) {
+++    fprintf(2, "%s: trace failed\n", argv[0]);
+++    exit(1);
+++  }
+++
+++  for(i = 2; i < argc && i < MAXARG; i++){
+++    nargv[i-2] = argv[i];
+++  }
+++  nargv[i-2] = 0;
+++  exec(nargv[0], nargv);
+++  printf("exec %s failed\n", nargv[0]);
+++  exit(1);
+++}
++diff --git a/xv6-labs-2024/user/tree.c b/xv6-labs-2024/user/tree.c
++new file mode 100644
++index 0000000..d8aad7b
++--- /dev/null
+++++ b/xv6-labs-2024/user/tree.c
++@@ -0,0 +1,108 @@
+++#include "kernel/types.h"
+++#include "kernel/stat.h"
+++#include "kernel/fs.h"
+++#include "user/user.h"
+++
+++void indent(int depth) {
+++  for(int i = 0; i < depth; i++){
+++    printf("  ");
+++  }
+++}
+++
+++char* basename(char *path) {
+++  char *p = path;
+++  char *name = path;
+++
+++  if(strcmp(path, "/") == 0)
+++    return path;
+++
+++  while(*p) {
+++    if(*p == '/')
+++      name = p + 1;
+++    p++;
+++  }
+++  return name;
+++}
+++
+++void print_node(char *path, int depth, int isdir) {
+++  indent(depth);
+++
+++  if(strcmp(path, "/") == 0){
+++    printf("/\n");
+++    return;
+++  }
+++
+++  if(isdir)
+++    printf("%s/\n", basename(path));
+++  else
+++    printf("%s\n", basename(path));
+++}
+++
+++void tree(char *path, int depth) {
+++  int fd;
+++  struct stat st;
+++  struct dirent de;
+++  char buf[512];
+++  char name[DIRSIZ + 1];
+++
+++  if(stat(path, &st) < 0){
+++    fprintf(2, "tree: cannot stat %s\n", path);
+++    return;
+++  }
+++
+++  print_node(path, depth, st.type == T_DIR);
+++
+++  if(st.type != T_DIR)
+++    return;
+++
+++  fd = open(path, 0);
+++  if(fd < 0){
+++    fprintf(2, "tree: cannot open %s\n", path);
+++    return;
+++  }
+++
+++  while(read(fd, &de, sizeof(de)) == sizeof(de)){
+++    if(de.inum == 0)
+++      continue;
+++
+++    memmove(name, de.name, DIRSIZ);
+++    name[DIRSIZ] = '\0';
+++
+++    if(strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+++      continue;
+++
+++    if(strlen(path) + 1 + strlen(name) + 1 > sizeof(buf)){
+++      fprintf(2, "tree: path too long\n");
+++      continue;
+++    }
+++
+++    if(strcmp(path, "/") == 0){
+++      buf[0] = '/';
+++      buf[1] = '\0';
+++      memmove(buf + 1, name, strlen(name) + 1);
+++    } else {
+++      strcpy(buf, path);
+++      int len = strlen(buf);
+++      buf[len] = '/';
+++      memmove(buf + len + 1, name, strlen(name) + 1);
+++    }
+++
+++    tree(buf, depth + 1);
+++  }
+++
+++  close(fd);
+++}
+++
+++int main(int argc, char *argv[]) {
+++  if(argc > 2){
+++    fprintf(2, "usage: tree [directory]\n");
+++    exit(1);
+++  }
+++
+++  if(argc == 1)
+++    tree(".", 0);
+++  else // argc == 2
+++    tree(argv[1], 0);
+++
+++  exit(0);
+++}
++diff --git a/xv6-labs-2024/user/user.h b/xv6-labs-2024/user/user.h
++index f16fe27..1ffd0c1 100644
++--- a/xv6-labs-2024/user/user.h
+++++ b/xv6-labs-2024/user/user.h
++@@ -1,4 +1,5 @@
++ struct stat;
+++struct procinfo;
++ 
++ // system calls
++ int fork(void);
++@@ -22,6 +23,8 @@ int getpid(void);
++ char* sbrk(int);
++ int sleep(int);
++ int uptime(void);
+++int trace(int);
+++int procinfo(int, struct procinfo*);
++ 
++ // ulib.c
++ int stat(const char*, struct stat*);
++diff --git a/xv6-labs-2024/user/usys.pl b/xv6-labs-2024/user/usys.pl
++index 01e426e..36087ff 100755
++--- a/xv6-labs-2024/user/usys.pl
+++++ b/xv6-labs-2024/user/usys.pl
++@@ -36,3 +36,5 @@ entry("getpid");
++ entry("sbrk");
++ entry("sleep");
++ entry("uptime");
+++entry("trace");
+++entry("procinfo");
+diff --git a/xv6-labs-2024/Makefile b/xv6-labs-2024/Makefile
+index c97af68..ed1e803 100644
+--- a/xv6-labs-2024/Makefile
++++ b/xv6-labs-2024/Makefile
+@@ -195,6 +195,9 @@ UPROGS=\
+ 	$U/_wc\
+ 	$U/_zombie\
+ 	$U/_xargs\
++	$U/_trace\
++        $U/_procinfo\
++        $U/_tree\
+ 
+ 
+ ifeq ($(LAB),syscall)
+diff --git a/xv6-labs-2024/kernel/proc.c b/xv6-labs-2024/kernel/proc.c
+index 130d9ce..2e7770e 100644
+--- a/xv6-labs-2024/kernel/proc.c
++++ b/xv6-labs-2024/kernel/proc.c
+@@ -295,6 +295,7 @@ fork(void)
+     return -1;
+   }
+   np->sz = p->sz;
++  np->trace_mask = p->trace_mask;
+ 
+   // copy saved user registers.
+   *(np->trapframe) = *(p->trapframe);
+diff --git a/xv6-labs-2024/kernel/proc.h b/xv6-labs-2024/kernel/proc.h
+index d021857..e00e6ca 100644
+--- a/xv6-labs-2024/kernel/proc.h
++++ b/xv6-labs-2024/kernel/proc.h
+@@ -104,4 +104,5 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++  int trace_mask;              // Mặt nạ để theo dõi syscall
+ };
+diff --git a/xv6-labs-2024/kernel/procinfo.h b/xv6-labs-2024/kernel/procinfo.h
+new file mode 100644
+index 0000000..e417407
+--- /dev/null
++++ b/xv6-labs-2024/kernel/procinfo.h
+@@ -0,0 +1,7 @@
++struct procinfo {
++  int pid;        // Process ID
++  int ppid;       // Parent process ID
++  int state;      // Process state
++  uint64 sz;      // Size of process memory (bytes)
++  char name[16];  // Process name
++};
+diff --git a/xv6-labs-2024/kernel/syscall.c b/xv6-labs-2024/kernel/syscall.c
+index ed65409..4ed175d 100644
+--- a/xv6-labs-2024/kernel/syscall.c
++++ b/xv6-labs-2024/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_trace(void);
++extern uint64 sys_procinfo(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,22 +128,29 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_trace]     sys_trace,
++[SYS_procinfo]  sys_procinfo,
+ };
+ 
+-void
+-syscall(void)
+-{
++static char *syscall_names[] = {
++[SYS_fork] "fork", [SYS_exit] "exit", [SYS_wait] "wait", [SYS_pipe] "pipe",
++[SYS_read] "read", [SYS_kill] "kill", [SYS_exec] "exec", [SYS_fstat] "fstat",
++[SYS_chdir] "chdir", [SYS_dup] "dup", [SYS_getpid] "getpid", [SYS_sbrk] "sbrk",
++[SYS_sleep] "sleep", [SYS_uptime] "uptime", [SYS_open] "open", [SYS_write] "write",
++[SYS_mknod] "mknod", [SYS_unlink] "unlink", [SYS_link] "link", [SYS_mkdir] "mkdir",
++[SYS_close] "close", [SYS_trace] "trace", [SYS_procinfo] "procinfo",
++};
++
++void syscall(void) {
+   int num;
+   struct proc *p = myproc();
+-
+   num = p->trapframe->a7;
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+-    // Use num to lookup the system call function for num, call it,
+-    // and store its return value in p->trapframe->a0
+-    p->trapframe->a0 = syscalls[num]();
++    p->trapframe->a0 = syscalls[num](); // Lưu kết quả trả về [cite: 116]
++    if((p->trace_mask >> num) & 1) { // Kiểm tra mask [cite: 116]
++      printf("%d: syscall %s -> %d\n", p->pid, syscall_names[num], (int)p->trapframe->a0); // In theo mẫu [cite: 117]
++    }
+   } else {
+-    printf("%d %s: unknown sys call %d\n",
+-            p->pid, p->name, num);
+     p->trapframe->a0 = -1;
+   }
+ }
+diff --git a/xv6-labs-2024/kernel/syscall.h b/xv6-labs-2024/kernel/syscall.h
+index bc5f356..7cbf6ef 100644
+--- a/xv6-labs-2024/kernel/syscall.h
++++ b/xv6-labs-2024/kernel/syscall.h
+@@ -1,22 +1,24 @@
+ // System call numbers
+-#define SYS_fork    1
+-#define SYS_exit    2
+-#define SYS_wait    3
+-#define SYS_pipe    4
+-#define SYS_read    5
+-#define SYS_kill    6
+-#define SYS_exec    7
+-#define SYS_fstat   8
+-#define SYS_chdir   9
+-#define SYS_dup    10
+-#define SYS_getpid 11
+-#define SYS_sbrk   12
+-#define SYS_sleep  13
+-#define SYS_uptime 14
+-#define SYS_open   15
+-#define SYS_write  16
+-#define SYS_mknod  17
+-#define SYS_unlink 18
+-#define SYS_link   19
+-#define SYS_mkdir  20
+-#define SYS_close  21
++#define SYS_fork      1
++#define SYS_exit      2
++#define SYS_wait      3
++#define SYS_pipe      4
++#define SYS_read      5
++#define SYS_kill      6
++#define SYS_exec      7
++#define SYS_fstat     8
++#define SYS_chdir     9
++#define SYS_dup      10
++#define SYS_getpid   11
++#define SYS_sbrk     12
++#define SYS_sleep    13
++#define SYS_uptime   14
++#define SYS_open     15
++#define SYS_write    16
++#define SYS_mknod    17
++#define SYS_unlink   18
++#define SYS_link     19
++#define SYS_mkdir    20
++#define SYS_close    21
++#define SYS_trace    22
++#define SYS_procinfo 23
+diff --git a/xv6-labs-2024/kernel/sysproc.c b/xv6-labs-2024/kernel/sysproc.c
+index 3b4d5bd..3610bdd 100644
+--- a/xv6-labs-2024/kernel/sysproc.c
++++ b/xv6-labs-2024/kernel/sysproc.c
+@@ -5,6 +5,7 @@
+ #include "memlayout.h"
+ #include "spinlock.h"
+ #include "proc.h"
++#include "procinfo.h"
+ 
+ uint64
+ sys_exit(void)
+@@ -91,3 +92,45 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++uint64
++sys_trace(void)
++{
++  int mask;
++  
++  // Chỉ gọi hàm để lấy giá trị, không dùng lệnh if
++  argint(0, &mask); 
++  
++  myproc()->trace_mask = mask;
++  return 0;
++}
++
++uint64
++sys_procinfo(void)
++{
++  int pid;
++  uint64 addr;
++  struct proc *p;
++  struct procinfo info;
++  extern struct proc proc[]; 
++
++  // Lấy các đối số trực tiếp, bỏ lệnh if đi
++  argint(0, &pid);
++  argaddr(1, &addr);
++
++  for(p = proc; p < &proc[NPROC]; p++){
++    acquire(&p->lock);
++    if(p->pid == pid){
++      info.pid = p->pid;
++      info.ppid = p->parent ? p->parent->pid : 0;
++      info.state = p->state;
++      info.sz = p->sz;
++      safestrcpy(info.name, p->name, sizeof(p->name));
++      release(&p->lock);
++      if(copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info)) < 0) return -1;
++      return 0;
++    }
++    release(&p->lock);
++  }
++  return -1;
++}
+diff --git a/xv6-labs-2024/user/procinfo.c b/xv6-labs-2024/user/procinfo.c
+new file mode 100644
+index 0000000..0799d91
+--- /dev/null
++++ b/xv6-labs-2024/user/procinfo.c
+@@ -0,0 +1,28 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/procinfo.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++  struct procinfo info;
++  int pid;
++
++  if(argc < 2){
++    pid = getpid();
++  } else {
++    pid = atoi(argv[1]);
++  }
++
++  if(procinfo(pid, &info) == 0){
++    printf("Process: %s\n", info.name);
++    printf("PID: %d, PPID: %d\n", info.pid, info.ppid);
++    printf("State: %d\n", info.state);
++    printf("Memory: %d bytes\n", (int)info.sz);
++  } else {
++    printf("procinfo failed for PID %d\n", pid);
++  }
++  exit(0);
++}
+diff --git a/xv6-labs-2024/user/trace.c b/xv6-labs-2024/user/trace.c
+new file mode 100644
+index 0000000..303041a
+--- /dev/null
++++ b/xv6-labs-2024/user/trace.c
+@@ -0,0 +1,29 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int
++main(int argc, char *argv[])
++{
++  int i;
++  char *nargv[MAXARG];
++
++  if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
++    fprintf(2, "Usage: %s mask command\n", argv[0]);
++    exit(1);
++  }
++
++  if (trace(atoi(argv[1])) < 0) {
++    fprintf(2, "%s: trace failed\n", argv[0]);
++    exit(1);
++  }
++
++  for(i = 2; i < argc && i < MAXARG; i++){
++    nargv[i-2] = argv[i];
++  }
++  nargv[i-2] = 0;
++  exec(nargv[0], nargv);
++  printf("exec %s failed\n", nargv[0]);
++  exit(1);
++}
+diff --git a/xv6-labs-2024/user/tree.c b/xv6-labs-2024/user/tree.c
+new file mode 100644
+index 0000000..d8aad7b
+--- /dev/null
++++ b/xv6-labs-2024/user/tree.c
+@@ -0,0 +1,108 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/fs.h"
++#include "user/user.h"
++
++void indent(int depth) {
++  for(int i = 0; i < depth; i++){
++    printf("  ");
++  }
++}
++
++char* basename(char *path) {
++  char *p = path;
++  char *name = path;
++
++  if(strcmp(path, "/") == 0)
++    return path;
++
++  while(*p) {
++    if(*p == '/')
++      name = p + 1;
++    p++;
++  }
++  return name;
++}
++
++void print_node(char *path, int depth, int isdir) {
++  indent(depth);
++
++  if(strcmp(path, "/") == 0){
++    printf("/\n");
++    return;
++  }
++
++  if(isdir)
++    printf("%s/\n", basename(path));
++  else
++    printf("%s\n", basename(path));
++}
++
++void tree(char *path, int depth) {
++  int fd;
++  struct stat st;
++  struct dirent de;
++  char buf[512];
++  char name[DIRSIZ + 1];
++
++  if(stat(path, &st) < 0){
++    fprintf(2, "tree: cannot stat %s\n", path);
++    return;
++  }
++
++  print_node(path, depth, st.type == T_DIR);
++
++  if(st.type != T_DIR)
++    return;
++
++  fd = open(path, 0);
++  if(fd < 0){
++    fprintf(2, "tree: cannot open %s\n", path);
++    return;
++  }
++
++  while(read(fd, &de, sizeof(de)) == sizeof(de)){
++    if(de.inum == 0)
++      continue;
++
++    memmove(name, de.name, DIRSIZ);
++    name[DIRSIZ] = '\0';
++
++    if(strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
++      continue;
++
++    if(strlen(path) + 1 + strlen(name) + 1 > sizeof(buf)){
++      fprintf(2, "tree: path too long\n");
++      continue;
++    }
++
++    if(strcmp(path, "/") == 0){
++      buf[0] = '/';
++      buf[1] = '\0';
++      memmove(buf + 1, name, strlen(name) + 1);
++    } else {
++      strcpy(buf, path);
++      int len = strlen(buf);
++      buf[len] = '/';
++      memmove(buf + len + 1, name, strlen(name) + 1);
++    }
++
++    tree(buf, depth + 1);
++  }
++
++  close(fd);
++}
++
++int main(int argc, char *argv[]) {
++  if(argc > 2){
++    fprintf(2, "usage: tree [directory]\n");
++    exit(1);
++  }
++
++  if(argc == 1)
++    tree(".", 0);
++  else // argc == 2
++    tree(argv[1], 0);
++
++  exit(0);
++}
+diff --git a/xv6-labs-2024/user/user.h b/xv6-labs-2024/user/user.h
+index f16fe27..1ffd0c1 100644
+--- a/xv6-labs-2024/user/user.h
++++ b/xv6-labs-2024/user/user.h
+@@ -1,4 +1,5 @@
+ struct stat;
++struct procinfo;
+ 
+ // system calls
+ int fork(void);
+@@ -22,6 +23,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int trace(int);
++int procinfo(int, struct procinfo*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/xv6-labs-2024/user/usys.pl b/xv6-labs-2024/user/usys.pl
+index 01e426e..36087ff 100755
+--- a/xv6-labs-2024/user/usys.pl
++++ b/xv6-labs-2024/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("trace");
++entry("procinfo");
